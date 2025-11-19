@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2D Endless Runner</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+        
+        body {
+            font-family: 'Press Start 2P', system-ui, sans-serif;
+            background-color: #1a1a1a;
+            overflow: hidden;
+            touch-action: none;
+        }
+        
+        canvas {
+            image-rendering: pixelated;
+        }
+    </style>
+</head>
+<body class="h-screen w-full flex items-center justify-center relative">
+    <div id="game-container" class="relative group">
+        <!-- Game Canvas -->
+        <canvas id="gameCanvas" width="800" height="400" class="border-4 border-gray-700 bg-sky-300 rounded shadow-2xl max-w-full max-h-full"></canvas>
+        <!-- UI Overlay: Start Screen -->
+        <div id="startScreen" class="absolute inset-0 flex flex-col items-center justify-center bg-black/60 text-white">
+            <h1 class="text-4xl md:text-6xl text-yellow-400 mb-4 text-shadow">RUNNER 2D</h1>
+            <p class="text-sm md:text-xl mb-8 animate-pulse">Press SPACE or Tap to Start</p>
+            <div class="text-xs text-gray-400">Jump to avoid obstacles</div>
+        </div>
+        <!-- UI Overlay: Game Over Screen (Hidden by default) -->
+        <div id="gameOverScreen" class="hidden absolute inset-0 flex flex-col items-center justify-center bg-black/80 text-white z-10">
+            <h2 class="text-4xl text-red-500 mb-2">GAME OVER</h2>
+            <p class="text-xl mb-4">Score: <span id="finalScore">0</span></p>
+            <p class="text-sm md:text-lg mb-8 animate-pulse">Press SPACE or Tap to Restart</p>
+        </div>
+        <!-- HUD: Score -->
+        <div class="absolute top-4 right-4 text-white text-xl drop-shadow-md font-bold z-0">
+            Score: <span id="scoreDisplay">0</span>
+        </div>
+    </div>
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const startScreen = document.getElementById('startScreen');
+        const gameOverScreen = document.getElementById('gameOverScreen');
+        const scoreDisplay = document.getElementById('scoreDisplay');
+        const finalScoreDisplay = document.getElementById('finalScore');
+        // Input State
+        const keys = { space: false };
+        // Game State
+        let isGameRunning = false;
+        let isGameOver = false;
+        let score = 0;
+        let gameSpeed = 5;
+        let frameCount = 0;
+        let animationId;
+        // Player Object
+        const player = {
+            x: 50,
+            y: 0, // Will be set relative to ground
+            width: 40,
+            height: 40,
+            color: '#ef4444', // Tailwind red-500
+            dy: 0,
+            jumpForce: 9, // Initial force
+            gravity: 0.6,
+            grounded: false,
+            isJumping: false,
+            jumpTimer: 0,
+            maxJumpTime: 15, // How long you can hold jump
+            draw() {
+                ctx.fillStyle = this.color;
+                // Draw body
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+                
+                // Draw simple eyes to indicate direction
+                ctx.fillStyle = 'white';
+                ctx.fillRect(this.x + 24, this.y + 8, 8, 8);
+                ctx.fillStyle = 'black';
+                ctx.fillRect(this.x + 28, this.y + 10, 4, 4);
+                
+                // Draw sweat band
+                ctx.fillStyle = '#3b82f6'; // blue
+                ctx.fillRect(this.x, this.y + 4, this.width, 6);
+            },
+            update() {
+                // Variable Jump Logic
+                if (this.isJumping && keys.space) {
+                    if (this.jumpTimer < this.maxJumpTime) {
+                        this.dy -= 0.5; // Add upward force while holding
+                        this.jumpTimer++;
+                    } else {
+                        this.isJumping = false;
+                    }
+                }
+                // Apply gravity
+                if (!this.grounded) {
+                    this.dy += this.gravity;
+                    this.y += this.dy;
+                } else {
+                    this.dy = 0;
+                }
+                // Ground collision
+                const groundLevel = canvas.height - 50; // Ground height is 50px
+                if (this.y + this.height >= groundLevel) {
+                    this.y = groundLevel - this.height;
+                    this.grounded = true;
+                    this.isJumping = false; // Reset jump state on ground
+                } else {
+                    this.grounded = false;
+                }
+            },
+            startJump() {
+                if (this.grounded) {
+                    this.dy = -this.jumpForce;
+                    this.grounded = false;
+                    this.isJumping = true;
+                    this.jumpTimer = 0;
+                }
+            },
+            endJump() {
+                this.isJumping = false;
+            }
+        };
+        // Obstacles Array
+        let obstacles = [];
+        class Obstacle {
+            constructor() {
+                this.width = 30 + Math.random() * 30;
+                this.height = 40 + Math.random() * 40;
+                this.x = canvas.width;
+                this.y = canvas.height - 50 - this.height;
+                this.color = '#166534'; // green-800
+                this.markedForDeletion = false;
+            }
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+                
+                // Add some texture/detail
+                ctx.strokeStyle = '#14532d';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(this.x, this.y, this.width, this.height);
+            }
+            update() {
+                this.x -= gameSpeed;
+                if (this.x + this.width < 0) {
+                    this.markedForDeletion = true;
+                    score++;
+                    scoreDisplay.innerText = score;
+                    
+                    // Increase difficulty
+                    if (score % 5 === 0) {
+                        gameSpeed += 0.5;
+                    }
+                }
+            }
+        }
+        // Background clouds
+        let clouds = [];
+        class Cloud {
+            constructor() {
+                this.x = canvas.width + Math.random() * 200;
+                this.y = Math.random() * (canvas.height / 2);
+                this.width = 60 + Math.random() * 80;
+                this.height = 30 + Math.random() * 20;
+                this.speed = gameSpeed * 0.2 + Math.random() * 0.5;
+            }
+            draw() {
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+                ctx.beginPath();
+                ctx.roundRect(this.x, this.y, this.width, this.height, 20);
+                ctx.fill();
+            }
+            update() {
+                this.x -= this.speed;
+                if (this.x + this.width < 0) {
+                    this.x = canvas.width + Math.random() * 200;
+                    this.y = Math.random() * (canvas.height / 2);
+                }
+            }
+        }
+        // Initialize environment
+        function initEnvironment() {
+            clouds = [];
+            for(let i=0; i<5; i++) {
+                clouds.push(new Cloud());
+                // Spread initial clouds
+                clouds[i].x = Math.random() * canvas.width; 
+            }
+        }
+        function drawGround() {
+            ctx.fillStyle = '#4ade80'; // bright grass green
+            ctx.fillRect(0, canvas.height - 50, canvas.width, 50);
+            
+            // Ground detail
+            ctx.fillStyle = '#22c55e';
+            ctx.fillRect(0, canvas.height - 45, canvas.width, 10);
+        }
+        function drawBackgroundText() {
+            if (score >= 3) {
+                ctx.save();
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.3)'; // Semi-transparent white
+                ctx.font = '30px "Press Start 2P"';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText("Илюха крутой реально", canvas.width / 2, canvas.height / 3);
+                ctx.restore();
+            }
+        }
+        function handleObstacles() {
+            // Spawn obstacles
+            if (frameCount % 100 === 0 && Math.random() < 0.7) { // Spawn rate logic
+                 obstacles.push(new Obstacle());
+            }
+            // Ensure at least one obstacle spawns if too much time passed
+            if (frameCount % 150 === 0 && obstacles.length === 0) {
+                 obstacles.push(new Obstacle());
+            }
+            for (let i = 0; i < obstacles.length; i++) {
+                obstacles[i].update();
+                obstacles[i].draw();
+            }
+            obstacles = obstacles.filter(obs => !obs.markedForDeletion);
+        }
+        function handleClouds() {
+            clouds.forEach(cloud => {
+                cloud.update();
+                cloud.draw();
+            });
+        }
+        function checkCollision() {
+            for (let obs of obstacles) {
+                // Collision detection with a small buffer to be forgiving
+                const buffer = 5;
+                if (
+                    player.x + buffer < obs.x + obs.width - buffer &&
+                    player.x + player.width - buffer > obs.x + buffer &&
+                    player.y + buffer < obs.y + obs.height &&
+                    player.y + player.height > obs.y
+                ) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        function gameLoop() {
+            if (!isGameRunning) return;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            handleClouds();
+            drawBackgroundText();
+            drawGround();
+            
+            player.update();
+            player.draw();
+            
+            handleObstacles();
+            
+            if (checkCollision()) {
+                endGame();
+                return; // Stop loop
+            }
+            
+            frameCount++;
+            animationId = requestAnimationFrame(gameLoop);
+        }
+        function startGame() {
+            if (isGameRunning) return;
+            
+            // Reset state
+            isGameRunning = true;
+            isGameOver = false;
+            score = 0;
+            gameSpeed = 5;
+            frameCount = 0;
+            obstacles = [];
+            scoreDisplay.innerText = score;
+            player.y = canvas.height - 50 - player.height;
+            player.dy = 0;
+            
+            initEnvironment();
+            
+            // UI updates
+            startScreen.classList.add('hidden');
+            gameOverScreen.classList.add('hidden');
+            
+            gameLoop();
+        }
+        function endGame() {
+            isGameRunning = false;
+            isGameOver = true;
+            finalScoreDisplay.innerText = score;
+            gameOverScreen.classList.remove('hidden');
+            cancelAnimationFrame(animationId);
+        }
+        // Input handling
+        function handleKeyDown(e) {
+            if (e.code === 'Space') {
+                if (!isGameRunning) {
+                    startGame();
+                }
+                keys.space = true;
+                player.startJump();
+            }
+        }
+        function handleKeyUp(e) {
+            if (e.code === 'Space') {
+                keys.space = false;
+                player.endJump();
+            }
+        }
+        function handleTouchStart(e) {
+            e.preventDefault(); // Prevent default to avoid scrolling
+            if (!isGameRunning) {
+                startGame();
+            }
+            keys.space = true;
+            player.startJump();
+        }
+        function handleTouchEnd(e) {
+            e.preventDefault();
+            keys.space = false;
+            player.endJump();
+        }
+        function handleMouseDown(e) {
+            if (!isGameRunning) {
+                startGame();
+            }
+            keys.space = true;
+            player.startJump();
+        }
+        function handleMouseUp(e) {
+            keys.space = false;
+            player.endJump();
+        }
+        window.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('keyup', handleKeyUp);
+        
+        // Touch
+        window.addEventListener('touchstart', handleTouchStart, {passive: false});
+        window.addEventListener('touchend', handleTouchEnd, {passive: false});
+        // Mouse
+        window.addEventListener('mousedown', handleMouseDown);
+        window.addEventListener('mouseup', handleMouseUp);
+        
+        // Initial Draw
+        drawGround();
+        initEnvironment();
+        clouds.forEach(c => c.draw());
+        player.y = canvas.height - 50 - player.height;
+        player.draw();
+    </script>
+</body>
+</html>
